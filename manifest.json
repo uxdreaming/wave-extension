@@ -15,7 +15,6 @@
     "<all_urls>"
   ],
   "action": {
-    "default_popup": "src/popup/popup.html",
     "default_icon": {
       "16": "icons/wave-16.png",
       "32": "icons/wave-32.png",

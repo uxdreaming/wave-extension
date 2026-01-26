@@ -205,9 +205,7 @@ async function handleStartRecording() {
       state.isRecording = true;
       state.currentWorkflow = response.workflow;
       updateUI();
-
-      // Close popup after a short delay to let user see the state change
-      setTimeout(() => window.close(), 300);
+      showSuccess('Recording started! Interact with your target page.');
     } else {
       // Check if error is about restricted page
       if (response.error?.includes('Cannot record') || response.error?.includes('regular website')) {
@@ -290,7 +288,10 @@ async function navigateAndRecord(url, workflowName) {
       state.isRecording = true;
       state.currentWorkflow = response.workflow;
       updateUI();
-      setTimeout(() => window.close(), 300);
+      showSuccess('Recording started! Interact with your target page.');
+      // Remove the restricted prompt
+      const prompt = document.querySelector('.restricted-prompt');
+      if (prompt) prompt.remove();
     } else {
       showError(response.error || 'Failed to start recording');
     }
@@ -341,8 +342,7 @@ async function playWorkflow(workflowId) {
     });
 
     if (response.success) {
-      // Success - close popup
-      setTimeout(() => window.close(), 500);
+      showSuccess('Workflow completed successfully!');
     } else {
       showError('Playback failed: ' + (response.error || 'Unknown error'));
     }
@@ -468,11 +468,11 @@ function renderWorkflows() {
       return `
       <div class="workflow-item ${isArchived ? 'archived' : ''}" data-id="${workflow.id}">
         <div class="workflow-info">
-          <div class="workflow-name">
+          <div class="workflow-name" data-edit-name="${workflow.id}" title="Click to edit name">
             ${escapeHtml(workflow.name)}
             ${isScheduled ? `<span class="schedule-badge ${scheduleStatus || ''}" title="${getScheduleTitle(schedule)}">⏰</span>` : ''}
           </div>
-          <div class="workflow-meta">${workflow.steps.length} steps</div>
+          <div class="workflow-meta">${workflow.steps.length} steps · ${formatDate(workflow.updatedAt)}</div>
         </div>
         <div class="workflow-actions">
           ${!isArchived ? `
@@ -538,7 +538,98 @@ function renderWorkflows() {
       deleteWorkflow(btn.dataset.delete);
     });
   });
+
+  $$('[data-edit-name]').forEach(el => {
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      startEditName(el.dataset.editName, el);
+    });
+  });
 }
+
+function formatDate(isoString) {
+  if (!isoString) return '';
+  const date = new Date(isoString);
+  const now = new Date();
+  const diffMs = now - date;
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+
+  if (diffDays === 0) {
+    return 'Today';
+  } else if (diffDays === 1) {
+    return 'Yesterday';
+  } else if (diffDays < 7) {
+    return `${diffDays} days ago`;
+  } else {
+    return date.toLocaleDateString();
+  }
+}
+
+function startEditName(workflowId, element) {
+  const workflow = state.workflows.find(w => w.id === workflowId);
+  if (!workflow) return;
+
+  // Get current name (without the schedule badge)
+  const currentName = workflow.name;
+
+  // Replace with input
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'input edit-name-input';
+  input.value = currentName;
+
+  const container = element.parentElement;
+  element.style.display = 'none';
+  container.insertBefore(input, element);
+
+  input.focus();
+  input.select();
+
+  const saveEdit = async () => {
+    const newName = input.value.trim();
+    if (newName && newName !== currentName) {
+      await renameWorkflow(workflowId, newName);
+    } else {
+      // Restore original
+      input.remove();
+      element.style.display = '';
+    }
+  };
+
+  input.addEventListener('blur', saveEdit);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      input.blur();
+    } else if (e.key === 'Escape') {
+      input.value = currentName; // Reset to original
+      input.blur();
+    }
+  });
+}
+
+async function renameWorkflow(workflowId, newName) {
+  try {
+    const workflow = state.workflows.find(w => w.id === workflowId);
+    if (!workflow) return;
+
+    const response = await sendMessage({
+      type: 'SAVE_WORKFLOW',
+      data: {
+        ...workflow,
+        name: newName,
+        updatedAt: new Date().toISOString()
+      }
+    });
+
+    if (response.success) {
+      await loadWorkflows();
+      showSuccess('Workflow renamed');
+    }
+  } catch (err) {
+    showError('Failed to rename: ' + err.message);
+    await loadWorkflows(); // Refresh to restore UI
+  }
 
 function getScheduleTitle(schedule) {
   if (!schedule) return '';

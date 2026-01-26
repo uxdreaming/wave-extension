@@ -563,6 +563,21 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 // Lifecycle
 // ============================================================================
 
+// Open Wave page when clicking extension icon
+chrome.action.onClicked.addListener(async (tab) => {
+  // Check if Wave page is already open
+  const waveTabs = await chrome.tabs.query({ url: chrome.runtime.getURL('src/popup/popup.html') });
+
+  if (waveTabs.length > 0) {
+    // Focus existing tab
+    await chrome.tabs.update(waveTabs[0].id, { active: true });
+    await chrome.windows.update(waveTabs[0].windowId, { focused: true });
+  } else {
+    // Open new tab
+    await chrome.tabs.create({ url: chrome.runtime.getURL('src/popup/popup.html') });
+  }
+});
+
 chrome.runtime.onInstalled.addListener(async () => {
   console.log('[Wave] Extension installed');
 
