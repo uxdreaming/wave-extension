@@ -630,6 +630,7 @@ async function renameWorkflow(workflowId, newName) {
     showError('Failed to rename: ' + err.message);
     await loadWorkflows(); // Refresh to restore UI
   }
+}
 
 function getScheduleTitle(schedule) {
   if (!schedule) return '';
