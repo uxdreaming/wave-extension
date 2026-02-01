@@ -115,7 +115,15 @@ async function handleStartRecording(data, tabId) {
   // Check if URL is accessible
   const tabUrl = tab.url || '';
   if (isRestrictedUrl(tabUrl)) {
-    throw new Error('Cannot record on this page. Please navigate to a regular website first.');
+    // If we're on Wave's own page or another restricted page, find another valid tab
+    const validTab = await findValidTab(tab.windowId, tabId);
+    if (validTab) {
+      tab = validTab;
+      tabId = validTab.id;
+      console.log('[Wave Background] Switched to valid tab:', tabUrl, '->', tab.url);
+    } else {
+      throw new Error('No valid tab found. Open a website in another tab first.');
+    }
   }
 
   // Inject content script if not already present
@@ -144,6 +152,9 @@ async function handleStartRecording(data, tabId) {
   isRecording = true;
   recordingTabId = tabId;
 
+  // Focus the recording tab so user sees where they're recording
+  await chrome.tabs.update(tabId, { active: true });
+
   // Notify content script to start recording
   try {
     await chrome.tabs.sendMessage(tabId, { type: 'RECORDING_STARTED' });
@@ -157,9 +168,9 @@ async function handleStartRecording(data, tabId) {
   await chrome.action.setBadgeText({ text: 'REC' });
   await chrome.action.setBadgeBackgroundColor({ color: '#e53935' });
 
-  console.log('[Wave Background] Recording started:', currentWorkflow.id);
+  console.log('[Wave Background] Recording started:', currentWorkflow.id, 'on tab:', tab.title);
 
-  return { success: true, workflow: currentWorkflow };
+  return { success: true, workflow: currentWorkflow, tabTitle: tab.title };
 }
 
 async function ensureContentScript(tabId) {
@@ -344,7 +355,7 @@ function isValidUrl(string) {
   try {
     const url = new URL(string);
     return url.protocol === 'http:' || url.protocol === 'https:';
-  } catch {
+  } catch (e) {
     return false;
   }
 }
@@ -427,6 +438,33 @@ function isRestrictedUrl(url) {
     'javascript:'
   ];
   return restricted.some(prefix => url.toLowerCase().startsWith(prefix));
+}
+
+async function findValidTab(windowId, excludeTabId) {
+  // Find all tabs in the same window
+  const tabs = await chrome.tabs.query({ windowId });
+
+  // Filter to valid tabs (not restricted, not the excluded tab)
+  const validTabs = tabs.filter(t =>
+    t.id !== excludeTabId &&
+    !isRestrictedUrl(t.url) &&
+    t.url // has a URL
+  );
+
+  if (validTabs.length === 0) {
+    return null;
+  }
+
+  // Prefer the most recently accessed tab
+  // Sort by lastAccessed if available, otherwise by index
+  validTabs.sort((a, b) => {
+    if (a.lastAccessed && b.lastAccessed) {
+      return b.lastAccessed - a.lastAccessed;
+    }
+    return b.index - a.index;
+  });
+
+  return validTabs[0];
 }
 
 // ============================================================================

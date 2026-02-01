@@ -34,7 +34,12 @@ const elements = {
   btnImport: $('#btn-import'),
   btnExport: $('#btn-export'),
   importFile: $('#import-file'),
-  btnToggleArchived: $('#btn-toggle-archived')
+  btnToggleArchived: $('#btn-toggle-archived'),
+
+  // Sort
+  btnSort: $('#btn-sort'),
+  sortMenu: $('#sort-menu'),
+  sortLabel: $('#sort-label')
 };
 
 // ============================================================================
@@ -47,7 +52,8 @@ let state = {
   currentWorkflow: null,
   workflows: [],
   showArchived: false,
-  schedules: {}
+  schedules: {},
+  sortBy: 'recent' // 'recent', 'frequency', 'alphabetical'
 };
 
 // ============================================================================
@@ -58,6 +64,7 @@ document.addEventListener('DOMContentLoaded', init);
 
 async function init() {
   initTheme();
+  await loadSortPreference();
   setupEventListeners();
   await refreshState();
   await loadWorkflows();
@@ -72,44 +79,8 @@ async function init() {
 }
 
 async function checkCurrentPage() {
-  try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    const url = tab?.url || '';
-
-    if (isRestrictedUrl(url) && !state.isRecording) {
-      // Show hint that user needs to navigate
-      const hint = document.createElement('div');
-      hint.className = 'page-hint';
-      hint.innerHTML = `
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="12" cy="12" r="10"/>
-          <path d="M12 16v-4M12 8h.01"/>
-        </svg>
-        <span>Navigate to a website to start recording</span>
-      `;
-      elements.panelIdle.insertBefore(hint, elements.panelIdle.firstChild);
-    }
-  } catch (e) {
-    console.log('Could not check current page:', e);
-  }
-}
-
-function isRestrictedUrl(url) {
-  if (!url) return true;
-  const restricted = [
-    'chrome://',
-    'chrome-extension://',
-    'about:',
-    'edge://',
-    'brave://',
-    'opera://',
-    'vivaldi://',
-    'devtools://',
-    'view-source:',
-    'data:',
-    'javascript:'
-  ];
-  return restricted.some(prefix => url.toLowerCase().startsWith(prefix));
+  // This page (Wave extension) is always restricted, so we don't show warnings here
+  // Users can use Alt+Shift+X from any target tab to record
 }
 
 // ============================================================================
@@ -130,6 +101,50 @@ function toggleTheme() {
   document.documentElement.setAttribute('data-theme', newTheme);
   chrome.storage.local.set({ theme: newTheme });
 }
+
+// ============================================================================
+// Sort Preferences
+// ============================================================================
+
+async function loadSortPreference() {
+  const result = await chrome.storage.local.get('sortBy');
+  state.sortBy = result.sortBy || 'recent';
+  updateSortLabel();
+}
+
+async function saveSortPreference(sortBy) {
+  state.sortBy = sortBy;
+  await chrome.storage.local.set({ sortBy });
+  updateSortLabel();
+  renderWorkflows();
+}
+
+function updateSortLabel() {
+  const labels = {
+    recent: 'Recent',
+    frequency: 'Most Used',
+    alphabetical: 'A-Z'
+  };
+  if (elements.sortLabel) {
+    elements.sortLabel.textContent = labels[state.sortBy] || 'Recent';
+  }
+  // Update active state in menu
+  $$('.sort-option').forEach(opt => {
+    opt.classList.toggle('active', opt.dataset.sort === state.sortBy);
+  });
+}
+
+function toggleSortMenu() {
+  elements.sortMenu.classList.toggle('hidden');
+}
+
+function closeSortMenu() {
+  elements.sortMenu.classList.add('hidden');
+}
+
+// ============================================================================
+// State Management
+// ============================================================================
 
 async function refreshState() {
   try {
@@ -184,6 +199,27 @@ function setupEventListeners() {
 
   // Theme toggle
   $('#btn-theme').addEventListener('click', toggleTheme);
+
+  // Sort dropdown
+  elements.btnSort.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleSortMenu();
+  });
+
+  $$('.sort-option').forEach(opt => {
+    opt.addEventListener('click', (e) => {
+      e.stopPropagation();
+      saveSortPreference(opt.dataset.sort);
+      closeSortMenu();
+    });
+  });
+
+  // Close sort menu when clicking elsewhere
+  document.addEventListener('click', (e) => {
+    if (!elements.sortMenu.contains(e.target) && e.target !== elements.btnSort) {
+      closeSortMenu();
+    }
+  });
 }
 
 // ============================================================================
@@ -205,101 +241,24 @@ async function handleStartRecording() {
       state.isRecording = true;
       state.currentWorkflow = response.workflow;
       updateUI();
-      showSuccess('Recording started! Interact with your target page.');
+      const tabInfo = response.tabTitle ? ` on "${response.tabTitle}"` : '';
+      showSuccess(`Recording started${tabInfo}!`);
     } else {
-      // Check if error is about restricted page
-      if (response.error?.includes('Cannot record') || response.error?.includes('regular website')) {
-        showRestrictedPagePrompt(name);
+      // Check if error is about no valid tab
+      if (response.error?.includes('No valid tab')) {
+        showError('Open a website in another tab first');
       } else {
         showError('Failed to start: ' + (response.error || 'Unknown error'));
       }
     }
   } catch (err) {
-    if (err.message?.includes('Cannot record') || err.message?.includes('regular website')) {
-      showRestrictedPagePrompt(name);
+    if (err.message?.includes('No valid tab')) {
+      showError('Open a website in another tab first');
     } else {
       showError('Error: ' + err.message);
     }
   } finally {
     setButtonLoading(elements.btnStart, false);
-  }
-}
-
-function showRestrictedPagePrompt(workflowName) {
-  // Remove existing prompt
-  const existing = document.querySelector('.restricted-prompt');
-  if (existing) existing.remove();
-
-  const prompt = document.createElement('div');
-  prompt.className = 'restricted-prompt';
-  prompt.innerHTML = `
-    <div class="restricted-content">
-      <p>Cannot record on browser pages.</p>
-      <p class="restricted-hint">Navigate to a website or enter a URL to start:</p>
-      <div class="restricted-input-group">
-        <input type="text" id="start-url" class="input" placeholder="https://example.com" value="https://www.google.com">
-        <button id="btn-go" class="btn btn-primary">Go</button>
-      </div>
-    </div>
-  `;
-
-  elements.panelIdle.appendChild(prompt);
-
-  const urlInput = $('#start-url');
-  const btnGo = $('#btn-go');
-
-  btnGo.addEventListener('click', () => navigateAndRecord(urlInput.value, workflowName));
-  urlInput.addEventListener('keypress', (e) => {
-    if (e.key === 'Enter') navigateAndRecord(urlInput.value, workflowName);
-  });
-
-  urlInput.focus();
-  urlInput.select();
-}
-
-async function navigateAndRecord(url, workflowName) {
-  if (!url) {
-    showError('Please enter a URL');
-    return;
-  }
-
-  // Add https if missing
-  if (!url.startsWith('http://') && !url.startsWith('https://')) {
-    url = 'https://' + url;
-  }
-
-  try {
-    setButtonLoading($('#btn-go'), true, '...');
-
-    // Navigate to URL first
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    await chrome.tabs.update(tab.id, { url });
-
-    // Wait for page to load
-    await new Promise(resolve => setTimeout(resolve, 1500));
-
-    // Now try to start recording
-    const response = await sendMessage({
-      type: 'START_RECORDING',
-      data: { name: workflowName }
-    });
-
-    if (response.success) {
-      state.isRecording = true;
-      state.currentWorkflow = response.workflow;
-      updateUI();
-      showSuccess('Recording started! Interact with your target page.');
-      // Remove the restricted prompt
-      const prompt = document.querySelector('.restricted-prompt');
-      if (prompt) prompt.remove();
-    } else {
-      showError(response.error || 'Failed to start recording');
-    }
-  } catch (err) {
-    showError('Error: ' + err.message);
-  } finally {
-    const btn = $('#btn-go');
-    if (btn) setButtonLoading(btn, false);
   }
 }
 
@@ -336,6 +295,9 @@ async function playWorkflow(workflowId) {
     state.isPlaying = true;
     updateUI();
 
+    // Increment usage count before playing
+    await incrementUsageCount(workflowId);
+
     const response = await sendMessage({
       type: 'PLAY_WORKFLOW',
       data: { workflowId }
@@ -352,6 +314,29 @@ async function playWorkflow(workflowId) {
     if (btn) btn.disabled = false;
     state.isPlaying = false;
     updateUI();
+  }
+}
+
+async function incrementUsageCount(workflowId) {
+  try {
+    const workflow = state.workflows.find(w => w.id === workflowId);
+    if (!workflow) return;
+
+    const usageCount = (workflow.usageCount || 0) + 1;
+    await sendMessage({
+      type: 'SAVE_WORKFLOW',
+      data: {
+        ...workflow,
+        usageCount,
+        lastUsedAt: new Date().toISOString()
+      }
+    });
+
+    // Update local state
+    workflow.usageCount = usageCount;
+    workflow.lastUsedAt = new Date().toISOString();
+  } catch (err) {
+    console.error('Failed to increment usage count:', err);
   }
 }
 
@@ -431,10 +416,13 @@ function updateUI() {
 
 function renderWorkflows() {
   // Filter workflows based on archived state
-  const filteredWorkflows = state.workflows.filter(w => {
+  let filteredWorkflows = state.workflows.filter(w => {
     const isArchived = w.status === 'archived';
     return state.showArchived ? isArchived : !isArchived;
   });
+
+  // Sort workflows
+  filteredWorkflows = sortWorkflows(filteredWorkflows);
 
   const totalCount = state.workflows.length;
   const activeCount = state.workflows.filter(w => w.status !== 'archived').length;
@@ -450,7 +438,7 @@ function renderWorkflows() {
       elements.emptyState.querySelector('.empty-hint').textContent = 'Archive workflows to see them here';
     } else {
       elements.emptyState.querySelector('p').textContent = 'No workflows yet';
-      elements.emptyState.querySelector('.empty-hint').textContent = 'Record your first workflow above';
+      elements.emptyState.querySelector('.empty-hint').textContent = 'Record your first workflow';
     }
     return;
   }
@@ -458,21 +446,21 @@ function renderWorkflows() {
   elements.emptyState.classList.add('hidden');
 
   elements.workflowsList.innerHTML = filteredWorkflows
-    .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
     .map(workflow => {
       const isArchived = workflow.status === 'archived';
       const schedule = state.schedules[workflow.id];
       const isScheduled = schedule && schedule.intervalMinutes > 0;
       const scheduleStatus = schedule?.lastStatus;
+      const usageCount = workflow.usageCount || 0;
 
       return `
       <div class="workflow-item ${isArchived ? 'archived' : ''}" data-id="${workflow.id}">
         <div class="workflow-info">
           <div class="workflow-name" data-edit-name="${workflow.id}" title="Click to edit name">
             ${escapeHtml(workflow.name)}
-            ${isScheduled ? `<span class="schedule-badge ${scheduleStatus || ''}" title="${getScheduleTitle(schedule)}">⏰</span>` : ''}
+            ${isScheduled ? `<span class="schedule-badge ${scheduleStatus || ''}" title="${getScheduleTitle(schedule)}">&#9200;</span>` : ''}
           </div>
-          <div class="workflow-meta">${workflow.steps.length} steps · ${formatDate(workflow.updatedAt)}</div>
+          <div class="workflow-meta">${workflow.steps.length} steps${usageCount > 0 ? ` · ${usageCount} runs` : ''} · ${formatDate(workflow.updatedAt)}</div>
         </div>
         <div class="workflow-actions">
           ${!isArchived ? `
@@ -545,6 +533,30 @@ function renderWorkflows() {
       startEditName(el.dataset.editName, el);
     });
   });
+}
+
+function sortWorkflows(workflows) {
+  switch (state.sortBy) {
+    case 'frequency':
+      return [...workflows].sort((a, b) => {
+        const aCount = a.usageCount || 0;
+        const bCount = b.usageCount || 0;
+        if (bCount !== aCount) return bCount - aCount;
+        // Tie-breaker: most recently used
+        return new Date(b.lastUsedAt || 0) - new Date(a.lastUsedAt || 0);
+      });
+
+    case 'alphabetical':
+      return [...workflows].sort((a, b) =>
+        a.name.toLowerCase().localeCompare(b.name.toLowerCase())
+      );
+
+    case 'recent':
+    default:
+      return [...workflows].sort((a, b) =>
+        new Date(b.updatedAt) - new Date(a.updatedAt)
+      );
+  }
 }
 
 function formatDate(isoString) {
