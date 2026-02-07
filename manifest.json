@@ -21,7 +21,8 @@
       "48": "icons/wave-48.png",
       "128": "icons/wave-128.png"
     },
-    "default_title": "Wave - Browser Automation"
+    "default_title": "Wave - Browser Automation",
+    "default_popup": "src/popup/popup.html"
   },
   "background": {
     "service_worker": "src/background/background.js",

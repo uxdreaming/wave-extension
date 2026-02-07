@@ -38,8 +38,7 @@ const elements = {
 
   // Sort
   btnSort: $('#btn-sort'),
-  sortMenu: $('#sort-menu'),
-  sortLabel: $('#sort-label')
+  sortMenu: $('#sort-menu')
 };
 
 // ============================================================================
@@ -120,14 +119,6 @@ async function saveSortPreference(sortBy) {
 }
 
 function updateSortLabel() {
-  const labels = {
-    recent: 'Recent',
-    frequency: 'Most Used',
-    alphabetical: 'A-Z'
-  };
-  if (elements.sortLabel) {
-    elements.sortLabel.textContent = labels[state.sortBy] || 'Recent';
-  }
   // Update active state in menu
   $$('.sort-option').forEach(opt => {
     opt.classList.toggle('active', opt.dataset.sort === state.sortBy);
@@ -382,6 +373,28 @@ async function archiveWorkflow(workflowId, archive = true) {
   }
 }
 
+async function toggleSlowMode(workflowId, enabled) {
+  try {
+    const workflow = state.workflows.find(w => w.id === workflowId);
+    if (!workflow) return;
+
+    const response = await sendMessage({
+      type: 'SAVE_WORKFLOW',
+      data: {
+        ...workflow,
+        slowMode: enabled
+      }
+    });
+
+    if (response.success) {
+      workflow.slowMode = enabled;
+      showSuccess(enabled ? 'Slow mode enabled' : 'Slow mode disabled');
+    }
+  } catch (err) {
+    showError('Error: ' + err.message);
+  }
+}
+
 function handleToggleArchived() {
   state.showArchived = !state.showArchived;
   elements.btnToggleArchived.classList.toggle('active', state.showArchived);
@@ -433,12 +446,14 @@ function renderWorkflows() {
   if (filteredWorkflows.length === 0) {
     elements.workflowsList.innerHTML = '';
     elements.emptyState.classList.remove('hidden');
+    const mainText = elements.emptyState.querySelector('p:first-child');
+    const hintText = elements.emptyState.querySelector('.empty-hint');
     if (state.showArchived) {
-      elements.emptyState.querySelector('p').textContent = 'No archived workflows';
-      elements.emptyState.querySelector('.empty-hint').textContent = 'Archive workflows to see them here';
+      if (mainText) mainText.textContent = 'No archived workflows';
+      if (hintText) hintText.textContent = 'Archive workflows to see them here';
     } else {
-      elements.emptyState.querySelector('p').textContent = 'No workflows yet';
-      elements.emptyState.querySelector('.empty-hint').textContent = 'Record your first workflow';
+      if (mainText) mainText.textContent = 'No workflows yet';
+      if (hintText) hintText.textContent = 'Record your first workflow';
     }
     return;
   }
@@ -453,6 +468,8 @@ function renderWorkflows() {
       const scheduleStatus = schedule?.lastStatus;
       const usageCount = workflow.usageCount || 0;
 
+      const isSlowMode = workflow.slowMode || false;
+
       return `
       <div class="workflow-item ${isArchived ? 'archived' : ''}" data-id="${workflow.id}">
         <div class="workflow-info">
@@ -464,6 +481,13 @@ function renderWorkflows() {
         </div>
         <div class="workflow-actions">
           ${!isArchived ? `
+          <label class="slow-mode-toggle" title="Slow mode (longer delays)">
+            <input type="checkbox" data-slow-mode="${workflow.id}" ${isSlowMode ? 'checked' : ''}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/>
+              <path d="M12 6v6l4 2"/>
+            </svg>
+          </label>
           <button class="btn btn-success" data-play="${workflow.id}" title="Run">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
               <path d="M8 5v14l11-7z"/>
@@ -531,6 +555,13 @@ function renderWorkflows() {
     el.addEventListener('click', (e) => {
       e.stopPropagation();
       startEditName(el.dataset.editName, el);
+    });
+  });
+
+  $$('[data-slow-mode]').forEach(input => {
+    input.addEventListener('change', (e) => {
+      e.stopPropagation();
+      toggleSlowMode(input.dataset.slowMode, input.checked);
     });
   });
 }

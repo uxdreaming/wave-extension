@@ -8,6 +8,8 @@
 // ============================================================================
 
 let isRecording = false;
+let shadowObserver = null;
+let attachedShadowRoots = new WeakSet();
 
 // ============================================================================
 // Message Handling
@@ -66,9 +68,19 @@ function startRecording() {
   if (isRecording) return;
 
   isRecording = true;
+
+  // Use window-level listener with capture to catch events before any framework
+  window.addEventListener('click', handleClick, true);
+  window.addEventListener('input', handleInput, true);
+  window.addEventListener('change', handleChange, true);
+
+  // Also add listeners to document for backup
   document.addEventListener('click', handleClick, true);
   document.addEventListener('input', handleInput, true);
   document.addEventListener('change', handleChange, true);
+
+  // Observe and attach to Shadow DOMs (for YouTube, etc.)
+  observeShadowRoots();
 
   // Visual indicator
   showRecordingIndicator();
@@ -80,14 +92,83 @@ function stopRecording() {
   if (!isRecording) return;
 
   isRecording = false;
+
+  // Remove window listeners
+  window.removeEventListener('click', handleClick, true);
+  window.removeEventListener('input', handleInput, true);
+  window.removeEventListener('change', handleChange, true);
+
+  // Remove document listeners
   document.removeEventListener('click', handleClick, true);
   document.removeEventListener('input', handleInput, true);
   document.removeEventListener('change', handleChange, true);
+
+  // Stop shadow DOM observer
+  if (shadowObserver) {
+    shadowObserver.disconnect();
+    shadowObserver = null;
+  }
 
   // Remove visual indicator
   hideRecordingIndicator();
 
   console.log('[Wave Content] Recording stopped');
+}
+
+// ============================================================================
+// Shadow DOM Support
+// ============================================================================
+
+function observeShadowRoots() {
+  // Attach to existing shadow roots
+  attachToShadowRoots(document.body);
+
+  // Watch for new elements with shadow roots
+  shadowObserver = new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      for (const node of mutation.addedNodes) {
+        if (node.nodeType === Node.ELEMENT_NODE) {
+          attachToShadowRoots(node);
+        }
+      }
+    }
+  });
+
+  shadowObserver.observe(document.body, {
+    childList: true,
+    subtree: true
+  });
+}
+
+function attachToShadowRoots(root) {
+  if (!root) return;
+
+  // Check if this element has a shadow root
+  if (root.shadowRoot && !attachedShadowRoots.has(root.shadowRoot)) {
+    attachedShadowRoots.add(root.shadowRoot);
+    root.shadowRoot.addEventListener('click', handleClick, true);
+    root.shadowRoot.addEventListener('input', handleInput, true);
+    root.shadowRoot.addEventListener('change', handleChange, true);
+    console.log('[Wave Content] Attached to shadow root:', root.tagName);
+
+    // Recursively check inside shadow root
+    attachToShadowRoots(root.shadowRoot);
+  }
+
+  // Check all child elements
+  const elements = root.querySelectorAll ? root.querySelectorAll('*') : [];
+  for (const el of elements) {
+    if (el.shadowRoot && !attachedShadowRoots.has(el.shadowRoot)) {
+      attachedShadowRoots.add(el.shadowRoot);
+      el.shadowRoot.addEventListener('click', handleClick, true);
+      el.shadowRoot.addEventListener('input', handleInput, true);
+      el.shadowRoot.addEventListener('change', handleChange, true);
+      console.log('[Wave Content] Attached to shadow root:', el.tagName);
+
+      // Recursively check inside shadow root
+      attachToShadowRoots(el.shadowRoot);
+    }
+  }
 }
 
 // ============================================================================
@@ -97,10 +178,13 @@ function stopRecording() {
 function handleClick(event) {
   if (!isRecording) return;
 
-  const target = event.target;
+  let target = event.target;
 
   // Skip Wave's own UI elements
   if (target.closest('#wave-recording-indicator')) return;
+
+  // Find the actual clickable element (button, link) instead of inner spans/divs
+  target = getClickableElement(target);
 
   const selector = generateSelector(target);
   if (!selector) return;
@@ -115,6 +199,52 @@ function handleClick(event) {
 
   sendStep(step);
   console.log('[Wave Content] Click recorded:', selector);
+}
+
+function getClickableElement(element) {
+  // If already a clickable element, return it
+  const clickableTags = ['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA'];
+  if (clickableTags.includes(element.tagName)) {
+    return element;
+  }
+
+  // Check for role="button" or role="link"
+  if (element.getAttribute('role') === 'button' || element.getAttribute('role') === 'link') {
+    return element;
+  }
+
+  // Check for onclick attribute
+  if (element.hasAttribute('onclick')) {
+    return element;
+  }
+
+  // Look for closest clickable parent (up to 5 levels)
+  let parent = element.parentElement;
+  let depth = 0;
+  while (parent && depth < 5) {
+    if (clickableTags.includes(parent.tagName)) {
+      return parent;
+    }
+    if (parent.getAttribute('role') === 'button' || parent.getAttribute('role') === 'link') {
+      return parent;
+    }
+    if (parent.hasAttribute('onclick')) {
+      return parent;
+    }
+    // Check for cursor pointer style (indicates clickable)
+    const style = window.getComputedStyle(parent);
+    if (style.cursor === 'pointer' && (parent.tagName === 'DIV' || parent.tagName === 'SPAN' || parent.tagName === 'LI')) {
+      // Make sure it's a reasonable target (has some identifying features)
+      if (parent.id || parent.className || parent.getAttribute('data-testid')) {
+        return parent;
+      }
+    }
+    parent = parent.parentElement;
+    depth++;
+  }
+
+  // No clickable parent found, return original
+  return element;
 }
 
 function handleInput(event) {
@@ -182,17 +312,74 @@ function generateSelector(element) {
   // Priority 2: data-testid or similar
   const testId = element.getAttribute('data-testid') ||
                  element.getAttribute('data-test-id') ||
-                 element.getAttribute('data-cy');
+                 element.getAttribute('data-cy') ||
+                 element.getAttribute('data-id');
   if (testId) {
-    return `[data-testid="${testId}"], [data-test-id="${testId}"], [data-cy="${testId}"]`;
+    const attr = element.getAttribute('data-testid') ? 'data-testid' :
+                 element.getAttribute('data-test-id') ? 'data-test-id' :
+                 element.getAttribute('data-cy') ? 'data-cy' : 'data-id';
+    return `[${attr}="${CSS.escape(testId)}"]`;
   }
 
   // Priority 3: name attribute (for form elements)
   if (element.name && (element.tagName === 'INPUT' || element.tagName === 'SELECT' || element.tagName === 'TEXTAREA')) {
-    return `${element.tagName.toLowerCase()}[name="${element.name}"]`;
+    return `${element.tagName.toLowerCase()}[name="${CSS.escape(element.name)}"]`;
   }
 
-  // Priority 4: Unique class combination
+  // Priority 4: Links with href
+  if (element.tagName === 'A' && element.getAttribute('href')) {
+    const href = element.getAttribute('href');
+    // Only use href if it's not just "#" or "javascript:"
+    if (href && href !== '#' && !href.startsWith('javascript:')) {
+      const selector = `a[href="${CSS.escape(href)}"]`;
+      if (document.querySelectorAll(selector).length === 1) {
+        return selector;
+      }
+      // Try with partial href match for dynamic URLs
+      const pathname = new URL(href, window.location.origin).pathname;
+      if (pathname && pathname !== '/') {
+        const partialSelector = `a[href*="${CSS.escape(pathname)}"]`;
+        if (document.querySelectorAll(partialSelector).length === 1) {
+          return partialSelector;
+        }
+      }
+    }
+  }
+
+  // Priority 5: Buttons/links by text content
+  if (['BUTTON', 'A', 'SPAN', 'DIV'].includes(element.tagName)) {
+    const text = element.textContent?.trim();
+    if (text && text.length > 0 && text.length < 50) {
+      // Try to find by text using xpath-like approach with contains
+      const tag = element.tagName.toLowerCase();
+      const candidates = document.querySelectorAll(tag);
+      const matches = Array.from(candidates).filter(el => el.textContent?.trim() === text);
+      if (matches.length === 1) {
+        // Store text for later matching
+        return `${tag}:text("${text.replace(/"/g, '\\"')}")`;
+      }
+    }
+  }
+
+  // Priority 6: aria-label
+  const ariaLabel = element.getAttribute('aria-label');
+  if (ariaLabel) {
+    const selector = `[aria-label="${CSS.escape(ariaLabel)}"]`;
+    if (document.querySelectorAll(selector).length === 1) {
+      return selector;
+    }
+  }
+
+  // Priority 7: title attribute
+  const title = element.getAttribute('title');
+  if (title) {
+    const selector = `[title="${CSS.escape(title)}"]`;
+    if (document.querySelectorAll(selector).length === 1) {
+      return selector;
+    }
+  }
+
+  // Priority 8: Unique class combination
   if (element.className && typeof element.className === 'string') {
     const classes = element.className.trim().split(/\s+/).filter(c => isStableClass(c));
     if (classes.length > 0) {
@@ -203,16 +390,15 @@ function generateSelector(element) {
     }
   }
 
-  // Priority 5: aria-label
-  const ariaLabel = element.getAttribute('aria-label');
-  if (ariaLabel) {
-    const selector = `${element.tagName.toLowerCase()}[aria-label="${ariaLabel}"]`;
+  // Priority 9: Placeholder for inputs
+  if (element.tagName === 'INPUT' && element.placeholder) {
+    const selector = `input[placeholder="${CSS.escape(element.placeholder)}"]`;
     if (document.querySelectorAll(selector).length === 1) {
       return selector;
     }
   }
 
-  // Priority 6: CSS path (fallback)
+  // Priority 10: CSS path (fallback)
   return getCssPath(element);
 }
 
@@ -240,27 +426,63 @@ function getCssPath(element) {
 
   while (current && current.nodeType === Node.ELEMENT_NODE) {
     let selector = current.tagName.toLowerCase();
+    let foundUniqueAttr = false;
 
+    // Check for stable ID
     if (current.id && isStableId(current.id)) {
       path.unshift(`#${CSS.escape(current.id)}`);
       break;
     }
 
-    // Add nth-child for uniqueness
-    const parent = current.parentElement;
-    if (parent) {
-      const siblings = Array.from(parent.children).filter(c => c.tagName === current.tagName);
-      if (siblings.length > 1) {
-        const index = siblings.indexOf(current) + 1;
-        selector += `:nth-of-type(${index})`;
+    // Check for unique identifying attributes
+    const uniqueAttrs = ['data-testid', 'data-test-id', 'data-cy', 'data-id', 'name', 'aria-label', 'role'];
+    for (const attr of uniqueAttrs) {
+      const value = current.getAttribute(attr);
+      if (value) {
+        const attrSelector = `${selector}[${attr}="${CSS.escape(value)}"]`;
+        if (document.querySelectorAll(attrSelector).length === 1) {
+          path.unshift(attrSelector);
+          foundUniqueAttr = true;
+          break;
+        }
       }
     }
 
-    path.unshift(selector);
-    current = parent;
+    if (!foundUniqueAttr) {
+      // Add stable classes if available
+      if (current.className && typeof current.className === 'string') {
+        const stableClasses = current.className.trim().split(/\s+/).filter(c => isStableClass(c)).slice(0, 2);
+        if (stableClasses.length > 0) {
+          selector += '.' + stableClasses.map(c => CSS.escape(c)).join('.');
+        }
+      }
+
+      // Only add nth-of-type if absolutely necessary
+      const parent = current.parentElement;
+      if (parent) {
+        const siblings = Array.from(parent.children).filter(c => c.tagName === current.tagName);
+        if (siblings.length > 1) {
+          // Check if our selector with classes is unique among siblings
+          const matchingSiblings = siblings.filter(sib => {
+            if (sib === current) return true;
+            const sibClasses = sib.className && typeof sib.className === 'string' ? sib.className.trim().split(/\s+/) : [];
+            const curClasses = current.className && typeof current.className === 'string' ? current.className.trim().split(/\s+/) : [];
+            return sibClasses.join(' ') === curClasses.join(' ');
+          });
+          if (matchingSiblings.length > 1) {
+            const index = siblings.indexOf(current) + 1;
+            selector += `:nth-of-type(${index})`;
+          }
+        }
+      }
+
+      path.unshift(selector);
+    }
+
+    current = current.parentElement;
 
     // Limit path depth
-    if (path.length > 5) break;
+    if (path.length > 4) break;
   }
 
   return path.join(' > ');
@@ -359,17 +581,24 @@ async function waitForElement(selector, timeout = 10000) {
   while (Date.now() - start < timeout) {
     for (const sel of selectors) {
       try {
-        // Try exact match first
+        // Check for text-based selector
+        const textMatch = sel.match(/^(\w+):text\("(.+)"\)$/);
+        if (textMatch) {
+          const [, tag, text] = textMatch;
+          const unescapedText = text.replace(/\\"/g, '"');
+          const candidates = document.querySelectorAll(tag);
+          for (const el of candidates) {
+            if (el.textContent?.trim() === unescapedText && isVisible(el)) {
+              return el;
+            }
+          }
+          continue;
+        }
+
+        // Try exact match
         const element = document.querySelector(sel);
         if (element && isVisible(element)) {
           return element;
-        }
-
-        // If not found and selector looks like it might have changed structure,
-        // try finding by text content for buttons/links
-        if (!element && sel.includes('[') && sel.includes('=')) {
-          // This is an attribute selector, skip text search
-          continue;
         }
       } catch (e) {
         // Invalid selector - try recovering

@@ -280,6 +280,9 @@ async function handlePlayWorkflow(data) {
     throw new Error('Cannot play on this page. The workflow should start with a navigate step, or navigate to a regular website first.');
   }
 
+  // Determine delay between steps
+  const stepDelay = workflow.slowMode ? 1500 : 300;
+
   // Execute each step
   for (let i = 0; i < workflow.steps.length; i++) {
     const step = workflow.steps[i];
@@ -287,8 +290,8 @@ async function handlePlayWorkflow(data) {
 
     try {
       await executeStep(currentTabId, step);
-      // Small delay between steps
-      await sleep(300);
+      // Delay between steps (longer if slowMode)
+      await sleep(stepDelay);
     } catch (err) {
       console.error('[Wave Background] Step failed:', err);
       return { success: false, error: `Step ${i + 1} failed: ${err.message}`, stepIndex: i };
@@ -600,21 +603,6 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 // ============================================================================
 // Lifecycle
 // ============================================================================
-
-// Open Wave page when clicking extension icon
-chrome.action.onClicked.addListener(async (tab) => {
-  // Check if Wave page is already open
-  const waveTabs = await chrome.tabs.query({ url: chrome.runtime.getURL('src/popup/popup.html') });
-
-  if (waveTabs.length > 0) {
-    // Focus existing tab
-    await chrome.tabs.update(waveTabs[0].id, { active: true });
-    await chrome.windows.update(waveTabs[0].windowId, { focused: true });
-  } else {
-    // Open new tab
-    await chrome.tabs.create({ url: chrome.runtime.getURL('src/popup/popup.html') });
-  }
-});
 
 chrome.runtime.onInstalled.addListener(async () => {
   console.log('[Wave] Extension installed');
