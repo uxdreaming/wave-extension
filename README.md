@@ -96,3 +96,7 @@ wave-extension/
 ## License
 
 MIT
+
+---
+
+*Maintained by [uxdreaming](https://github.com/uxdreaming)*
